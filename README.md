@@ -8,7 +8,7 @@ happypenguin uses variation between the genomes to determine their genotype. Rea
 ### alignment_A.sam
 All reads aligned to reference genome A, with match/mismatch information in the CIGAR string.
 
-for example, to align using the minimap2 aligner (https://github.com/lh3/minimap2):
+For example, to align using the minimap2 aligner (https://github.com/lh3/minimap2):
 > minimap2 --eqx -a genomeA.fasta reads.fasta
 
 ### alignment_A.sam
@@ -18,6 +18,7 @@ All reads aligned to reference genome B, like above.
 SYRI (https://schneebergerlab.github.io/syri/fileformat.html) is used to call variation between the two parental genomes. 
 First, align the parental genomes together:
 > minimap2 --eqx -ax asm10 genomeA.fa genomeB.fa > aln.sam
+Now, run syri:
 > syri -c aln.sam -r genomeA.fa -q genomeB.fa -k -F S --cigar
 
 ## Output
