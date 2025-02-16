@@ -17,7 +17,8 @@ All reads aligned to reference genome B, like above.
 ### syri.out
 SYRI (https://schneebergerlab.github.io/syri/fileformat.html) is used to call variation between the two parental genomes. 
 First, align the parental genomes together:
-> minimap2 --eqx -ax asm10 genomeA.fa genomeB.fa > aln.sam
+> minimap2 --eqx -ax asm10 genomeA.fa genomeB.fa > aln.sam 
+
 Now, run syri:
 > syri -c aln.sam -r genomeA.fa -q genomeB.fa -k -F S --cigar
 
