@@ -1,9 +1,20 @@
+// happypenguin v2.0.0
+// Peter Reifenstein
+// February 25, 2025
+
 #include "happypenguin.h"
+const string VERSION = "2.0.1";
 #define NUM_CATEGORIES 9
 #define NUM_RECOMBINANT_CATEGORIES 3
 #define CHOMP_CATEGORIES_INDEX 4
 
-bool*** SNP_coordinates;
+// version 2.0.0. added consensus matrix
+// version 2.0.1. changed 1 and X to combine to x (instead of 1)
+// version 2.0.1. do not flush buffer every iteration. Write '\n' token instead of endl, buffer will flush (write to file) automatically when it is full
+
+unsigned int*** SNP_coordinate;
+char*** SNP_nucleotide;
+
 int num_chromosomes;
 
 ofstream*** output_SAM_files;
@@ -14,6 +25,10 @@ ofstream recombinantinfo_files[NUM_RECOMBINANT_CATEGORIES];
 ofstream readlength_files[NUM_CATEGORIES + 1];
 ofstream error_file;
 
+vector<tuple<long long,string>> recombinantinfo_vector[NUM_RECOMBINANT_CATEGORIES];
+
+long genome1size = 0;
+
 ifstream sam_files[2];
 
 unsigned long long totalErrors = 0;
@@ -22,18 +37,29 @@ unsigned long long totalErrorBP = 0;
 map<string, int> chromosome_numbers;
 map<int, string> chromosome_names[2];
 
-static string SNP_symbols[] = {"A","B","!","?"};
-static string SNP_meanings[] = {"GenotypeA","GenotypeB","BothMismatch","NeitherMismatch"};
-static char ALIGN_DIRECTIONS[] = {'f','r'};
+static string read_SNP_symbols[]      = {"1","2","O","X","-"};
+// static string consensus_SNP_symbols[] = {"1","2","O","X","-","!","?","$"};
 
-static string CATEGORY_NAMES[] = {"GenotypeA", "GenotypeB", "LowQualityCrossover", "MediumQualityCrossover", "HighQualityCrossover","ChompBadAlign", "ChompNoSNPs", "ChompBadGT", "ChompMultimapRec"};
+
+static char read_to_concensus[5][5] = {{'1','!','?','x','-'},
+                                          {'!','2','?','x','-'},
+                                          {'?','?','O','$','-'},
+                                          {'x','x','$','X','-'},
+                                          {'-','-','-','-','-'}
+                                        };
+
+// static string SNP_meanings[] = {"Genotype1","Genotype2","BothMismatch","NeitherMismatch"};
+static char ALIGN_DIRECTIONS[] = {'F','R'};
+static map<char, short> GT_ID = {{'1' , 0} , {'2' , 1}};
+
+static string CATEGORY_NAMES[] = {"Genotype1", "Genotype2", "LowQualityCrossover", "MediumQualityCrossover", "HighQualityCrossover","ChompBadAlign", "ChompNoSNPs", "ChompBadGT", "ChompMultimapRec"};
 int num_reads_in_category[NUM_CATEGORIES];
 
 int main(int argc, char* argv[]) {
     if(argc < 4) {
         printProgramInfo();
     }
-    string dir_string = "happypenguin_output";
+    string dir_string = "happypenguin_" + VERSION + "_output";
     if(argc > 4) {
         string append = argv[4];
         dir_string += "_on_" + append;
@@ -67,18 +93,84 @@ void categorizeRead(int categorization, string& read_name, string& sam_line_A, s
     num_reads_in_category[categorization]++;
 
     // 3. write the SAM files with the read
-    *output_SAM_files[0][categorization] << read_name << sam_line_A << endl;
-    *output_SAM_files[1][categorization] << read_name << sam_line_B << endl;
+    *output_SAM_files[0][categorization] << read_name << sam_line_A << '\n';
+    *output_SAM_files[1][categorization] << read_name << sam_line_B << '\n';
 
     // 4. write the text file with the read and the all reads text file
-    output_TXT_files[categorization] << textoutput << endl;
-    output_TXT_files[NUM_CATEGORIES] << textoutput << endl;
+    output_TXT_files[categorization] << textoutput << '\n';
+    output_TXT_files[NUM_CATEGORIES] << textoutput << '\n';
 
     // 5. write the length of the read to its corresponding file
-    readlength_files[categorization] << len << endl;
-    readlength_files[NUM_CATEGORIES] << len << endl;
+    readlength_files[categorization] << len << '\n';
+    readlength_files[NUM_CATEGORIES] << len << '\n';
 
     return;
+}
+
+
+string reconstructAlignedSequence(stringstream& read, int& len, unsigned long& loc, string& chrom_name, bool& dir) {
+    // Lsat_Sal__Chrom2_(7016910..7020531)	2064	SERH_U_Chr_2	35850229	1	4=1X82=1X79=1X60=1X111=1X20=1X3=1X97=1X194=1X12=1X28=1X12=1X21=1X15=1X3=1I49=1X10=1X1=1X144=1D76=1X9=1X1=1X5=2565H
+    // readname                             flag    chrom_aligned   position    qual    CIGARstring
+
+    int num, flag, mapq;
+    string cigar_str;
+    string seq;
+
+    string str;
+
+    read >> flag;
+    read >> chrom_name;
+    read >> loc;
+    read >> mapq;
+
+    read >> cigar_str; // field 6
+    read >> str; 
+    read >> num;
+    read >> num;
+    read >> seq;   // field 10
+
+    dir = flag & 16; // check if 16 present in flag, indicating aligned reverse direction
+
+    stringstream cigar(cigar_str);
+    char token;
+    int val;
+    string align_seq;
+    int seq_pos = 0;
+    
+    if(!(cigar.str() == "*")) {
+        while (cigar) {
+            cigar >> val;
+            cigar >> token;
+            if (token == 'M' || token == '=' || token == 'X') {
+                align_seq += seq.substr(seq_pos, val);
+                seq_pos += val;
+            } 
+            else if (token == 'I') {
+                // ignore and consume seq
+                seq_pos += val;
+            }
+            else if (token == 'D' || token == 'N') {
+                // seq deleted from query
+                for (int i = 0; i < val; i++) {
+                    align_seq += "X";
+                }
+            }
+            else if (token == 'S') {
+                // consume seq
+                seq_pos += val;
+            }
+            else if (token == 'H' || token == 'P') {
+                // skip token
+            }
+            else {
+                throw("[cigar_parse] Invalid cigar token: " + token);
+            }
+        }
+    }
+    len = align_seq.length();
+
+    return align_seq;
+
 }
 
 void analyzeReads() {
@@ -97,8 +189,21 @@ void analyzeReads() {
     
     while(sam_files[0]) {
 
-        // 1. get mismatch locations for both alignments
-        vector<int> mmlocations[2];
+        string textoutput;
+
+        bool silenced = true;
+        if(read_number % 1000 == 0)
+            silenced = false;
+        read_number++;
+
+        current_read_name = next_read_name;
+        textoutput.append("[" + to_string(read_number) + "] Processing Read " + current_read_name + '\n');
+
+
+        // 1. reconstruct aligned sequences for both alignments
+
+        string align_seq[2];
+        string line;
         int align_len[2];
         unsigned long align_loc[2];
         unsigned long align_end_loc[2];
@@ -108,27 +213,13 @@ void analyzeReads() {
         string SAM_line[2];
         bool align_dir[2];
 
-        vector<int> expectedSNPlocations[2];
-        vector<bool> genotypeMatrix[2];
-        vector<int> consensusMatrix;
-        int num_gt_switches = -1;
-
-        string textoutput;
-
-        bool silenced = true;
-        if(read_number % 100 == 0)
-            silenced = false;
-        read_number++;
-
-        current_read_name = next_read_name;
-        textoutput.append("#### [" + to_string(read_number) + "] Processing Read " + current_read_name + '\n');
-
-        string line;
         for(int i = 0; i < 2; i++) {
             getline(sam_files[i], SAM_line[i]);
             stringstream read(SAM_line[i]);
 
-            parseCIGAR(read, (mmlocations[i]), align_len[i], align_loc[i], align_chrom_name[i], align_dir[i]);
+            align_seq[i] = reconstructAlignedSequence(read, align_len[i], align_loc[i], align_chrom_name[i], align_dir[i]);
+
+            // parseCIGAR(read, (mmlocations[i]), align_len[i], align_loc[i], align_chrom_name[i], align_dir[i]);
             align_end_loc[i] = align_loc[i] + align_len[i];
             align_chrom[i] = chromosome_numbers[align_chrom_name[i]];
 
@@ -142,100 +233,101 @@ void analyzeReads() {
             }
         }
 
-        // 2. create SNP matrix for both alignments
-        for(int i = 0; i < 2; ++i) {
-            auto mismatch_location_it = mmlocations[i].begin();
-            // stores the last checked index for a mismatch
-            for(unsigned long pos = align_loc[i]; pos < align_end_loc[i]; ++pos) {
-                if(SNP_coordinates[i][align_chrom[i]][pos] == 1) {
-                    int relative_align_pos = pos - align_loc[i];
-                    // Add this to the list of SNP locations
-                    expectedSNPlocations[i].push_back(relative_align_pos);
-                    bool SNP_exists = false;
-                    // Check if Mismatch position exists
-                    while(true) {
-                        if(mismatch_location_it == mmlocations[i].end() || *mismatch_location_it > relative_align_pos) {
-                            break;
-                        }        
-                        if(*mismatch_location_it == relative_align_pos) {
-                            SNP_exists = true;
-                            break;
-                        }
-                        mismatch_location_it++;
-                    }
-                    if(SNP_exists)
-                        genotypeMatrix[i].push_back(i ^ true);
-                    else
-                        genotypeMatrix[i].push_back(i);
-                }
+        // 2. look up SNPs on genome 1 alignment, load into memory
+
+        vector<int> variantLocations[2];
+        vector<char> variantNucleotides[2];
+
+        for(unsigned int pos = align_loc[0]; pos < align_end_loc[0]; ++pos) {
+            if(SNP_coordinate[0][align_chrom[0]][pos] != 0) {
+                // find coordinates of variant site along both alignments
+                unsigned int relative_variant_pos[2];
+                relative_variant_pos[0] = pos - align_loc[0];
+                relative_variant_pos[1] = SNP_coordinate[0][align_chrom[0]][pos] - align_loc[1];
+
+                // record nucleotides on both genomes
+                variantLocations[0].push_back(relative_variant_pos[0]);
+                variantLocations[1].push_back(relative_variant_pos[1]);
+                variantNucleotides[0].push_back(SNP_nucleotide[0][align_chrom[1]][pos]);
+                variantNucleotides[1].push_back(SNP_nucleotide[1][align_chrom[1]][pos]);
             }
         }
 
-        // 3. create consensus SNP matrix
-        vector<bool>::iterator matrix_it[2];
-        int numSNPs[2] = {0};
-        int totalSNPs = 0;
-        int numIgnoredSNPs = 0;
-        for(int i = 0; i < 2; i++) matrix_it[i] = genotypeMatrix[i].begin();
-        int previous_gt = -1, breakpoint = -1, index = 0, start_gt = -1;
-        while(matrix_it[0] != genotypeMatrix[0].end() && matrix_it[1] != genotypeMatrix[1].end()) {
-
-            if(*matrix_it[0] == *matrix_it[1]) {
-                // A) both agree on categorization
-                int SNP_categorization = *matrix_it[0];
-                consensusMatrix.push_back(SNP_categorization);
-                if(start_gt == -1)
-                    start_gt = SNP_categorization;
-                if(previous_gt != SNP_categorization) {
-                    previous_gt = SNP_categorization;
-                    num_gt_switches++;
-                    breakpoint = totalSNPs;
-                }
-                ++numSNPs[SNP_categorization];
-                ++totalSNPs;
-            } else if(*matrix_it[0] == 1 && *matrix_it[1] == 0) {
-                // B) both have a mismatch, ignore this SNP
-                ++numIgnoredSNPs;
-                consensusMatrix.push_back(2);
-            } else {
-                // C) neither have a mismatch, ignore this SNP
-                ++numIgnoredSNPs;
-                consensusMatrix.push_back(3);
-            }
-            ++matrix_it[0]; ++ matrix_it[1]; ++ index;
-        }
-
-        // 4. Write to file
-        for(int i = 0; i < 2; i++) {
-            textoutput.append("  >> Aligned to chromosome " + to_string(align_chrom[i] + 1)  + " (called " + align_chrom_name[i] + ") from position " + to_string(align_loc[i]) + " to " + to_string(align_end_loc[i]) + " (Total Length " + to_string(align_len[i]) + ")");
+        for (int i = 0; i < 2; i++) {
+            textoutput.append("Mapped to chromosome " + to_string(align_chrom[i] + 1)  + " from position " + to_string(align_loc[i]) + " to " + to_string(align_end_loc[i]) + " (Total Length " + to_string(align_len[i]) + ")");
             if(n_alternate_alignments[i] > 0)
-                textoutput.append(" Note: " + to_string(n_alternate_alignments[i]) + " alternate alignment(s)");
+                textoutput.append(" with " + to_string(n_alternate_alignments[i]) + " alternate mappings(s)");
             textoutput.append("\n");
-
-            textoutput.append("Mismatch Locations     (Total " + to_string(mmlocations[i].size()) + "):");
-            for(auto it = mmlocations[i].begin(); it != mmlocations[i].end(); ++it) {
-                textoutput.append('\t' + to_string(*it));
-            } textoutput.append("\n");
-
-            textoutput.append("Expected SNP Locations (Total " + to_string(expectedSNPlocations[i].size()) + "):");
-            for(auto it = expectedSNPlocations[i].begin(); it != expectedSNPlocations[i].end(); ++it) {
-               textoutput.append('\t' + to_string(*it));
-            } textoutput.append("\n");
-
-            textoutput.append("Genotype Matrix:");
-            for(auto it = genotypeMatrix[i].begin(); it != genotypeMatrix[i].end(); ++it) {
-                textoutput.append("\t[" + (SNP_symbols[*it]) + "]");
-            } textoutput.append("\n");
         }
-        textoutput.append(" **** Consensus Matrix ");
-        if(genotypeMatrix[0].size() != genotypeMatrix[1].size()) {
-            // log_file << "[anomolous case] read " << current_read_name << " has genotype matrixes with different number of SNPs" << endl;
-            textoutput.append("(Warning: different GT Matrix sizes)");
+
+        int numSNPs = variantLocations[0].size();
+
+        textoutput.append("SNP Locations (Total " + to_string(numSNPs) + "): ");
+        for(int i = 0; i < numSNPs; i++) {
+            textoutput.append(to_string(variantLocations[0][i]) + "/" + to_string(variantLocations[1][i]) + ":" + (variantNucleotides[0][i]) + "/" + (variantNucleotides[1][i]) + "\t");
         }
-        textoutput.append(":");
-        for(auto it = consensusMatrix.begin(); it != consensusMatrix.end(); ++it) {
-            textoutput.append("\t" + (SNP_symbols[*it]) + "");
-        } textoutput.append("\n");
+        textoutput.append("\n");
+
+        // 3. extract nucleotides at SNP locations for both alignments (A, C, G, T, X, or -), and call their genotype
+        char readNucleotides[2][numSNPs];
+        short readSNPs[2][numSNPs];
+        for(int n = 0; n < numSNPs; n++) {
+            for(int i = 0; i < 2; i++) {
+                if (i > 0 && (variantLocations[i][n] < 0 || variantLocations[i][n] > align_len[i])) {
+                    // this SNP position is out of bounds
+                    // indicates read did not align in similar location that genomic SNP calling
+                    readNucleotides[i][n] = '-';
+                    readSNPs[i][n] = 4;
+                }
+                else {
+                    readNucleotides[i][n] = align_seq[i][variantLocations[i][n]];
+                    if(readNucleotides[i][n] == 'X') readSNPs[i][n] = 3;
+                    else if(readNucleotides[i][n] == variantNucleotides[0][n]) readSNPs[i][n] = 0;
+                    else if(readNucleotides[i][n] == variantNucleotides[1][n]) readSNPs[i][n] = 1;
+                    else readSNPs[i][n] = 2;
+                }
+            }
+        }
+
+        for (int i = 0; i < 2; i++) {
+            textoutput.append("  Genotype Matrix:  ");
+            for (int n = 0; n < numSNPs; n++) {
+                textoutput.append(read_SNP_symbols[readSNPs[i][n]]);
+            }
+            textoutput.append("\n");
+        }
+
+        // 4. generate concensus matrix
+        char readConsensus[numSNPs];
+        short numGTswitches = -1;
+        short breakpoint = -1;
+        char lastSNP = 'N';
+        char newSNP = 'N';
+        char firstSNP = 'N';
+        
+        int numUsefulSNPs = 0;
+        int numIgnoredSNPs = 0;
+        for (int n = 0; n < numSNPs; n++) {
+            newSNP = read_to_concensus[readSNPs[0][n]][readSNPs[1][n]];
+            readConsensus[n] = newSNP;
+            if(newSNP == '1' || newSNP == '2') {
+                if(firstSNP == 'N')
+                    firstSNP = newSNP;
+                numUsefulSNPs ++;
+                if(newSNP != lastSNP) {
+                    lastSNP = newSNP;
+                    numGTswitches ++;
+                    breakpoint = numUsefulSNPs;
+                }
+            } else
+                numIgnoredSNPs ++;
+        }
+
+        textoutput.append(" Consensus Matrix:  ");
+        for (int n = 0; n < numSNPs; n++) {
+            textoutput.append(1, readConsensus[n]);
+        }
+        textoutput.append("\n");
 
         // 5. categorization
         // #CHOMP CATEGORY 1
@@ -244,38 +336,38 @@ void analyzeReads() {
             continue;
         }
         // #CHOMP CATEGORY 2
-        if(totalSNPs < 1) {
+        if(numUsefulSNPs < 1) {
             categorizeRead(CHOMP_CATEGORIES_INDEX + 2, current_read_name, SAM_line[0], SAM_line[1], textoutput, silenced, align_len[1]);
             continue;
         }
         // #CHOMP CATEGORY 3
-        if(num_gt_switches > 1) {
+        if(numGTswitches > 1) {
             categorizeRead(CHOMP_CATEGORIES_INDEX + 3, current_read_name, SAM_line[0], SAM_line[1], textoutput, silenced, align_len[1]);
             continue;
         }
 
-        // #GENOTYPE A or GENOTYPE B
-        if(num_gt_switches == 0) {
+        // #GENOTYPE 1 or GENOTYPE 2
+        if(numGTswitches == 0) {
             // 1. Count Errors
-            totalErrors += mmlocations[1].size() - expectedSNPlocations[1].size();
-            totalErrorBP += align_len[1];
+            // TO IMPLEMENT
+            // totalErrors += mmlocations[1].size() - expectedSNPlocations[1].size();
+            // totalErrorBP += align_len[1];
 
             // 2. Categorize
-            categorizeRead(start_gt, current_read_name, SAM_line[0], SAM_line[1], textoutput, silenced, align_len[1]);
+            categorizeRead(GT_ID[firstSNP], current_read_name, SAM_line[0], SAM_line[1], textoutput, silenced, align_len[1]);
             continue;
         }
         
         // ### RECOMBINANT
 
-        // Check for alternate alignments
-        bool alternate_alignments = false;
+        // Check for alternate mappings
+        bool alternate_mappings = false;
         if(n_alternate_alignments[0] > 0 || n_alternate_alignments[1] > 0) {
-            alternate_alignments = true;
-            // log_file << "[anomolous case] Read " << current_read_name << " (which is not thrown out) has alternate alignment(s)" << endl;
+            alternate_mappings = true;
         }
 
         // #CHOMP CATEGORY 4
-        if(alternate_alignments) {
+        if(alternate_mappings) {
             categorizeRead(CHOMP_CATEGORIES_INDEX + 4, current_read_name, SAM_line[0], SAM_line[1], textoutput, silenced, align_len[1]);
             continue;
         }
@@ -283,69 +375,42 @@ void analyzeReads() {
         int quality = 0;
 
         // #LOW QUALITY RECOMBINANT
-        if(breakpoint == 1 || breakpoint == totalSNPs - 1) quality = 0;
+        if(breakpoint == 2 || breakpoint == numUsefulSNPs) quality = 0;
 
         // #MEDIUM QUALITY RECOMBINANT
-        else if(breakpoint == 2 || breakpoint == totalSNPs - 2) quality = 1;
+        else if(breakpoint == 3 || breakpoint == numUsefulSNPs - 1) quality = 1;
 
         // #HIGH QUALITY RECOMBINANT
         else quality = 2;
 
         // write to recombinant info
-        double relativeBreakpoint = (double) breakpoint / (double) totalSNPs;
-        
-        // name alignmentSNPs(A:B)  numSNPs(A:B)    relativeBreakpoint  numIgnoredSNPs  numAlternateAlignments(A:B)   firstSNP    alignDir(A:B)   chromosome(A:B)   len(A:B)    alignloc(A:B)
-        recombinantinfo_files[quality] << current_read_name << '\t' << genotypeMatrix[0].size() << ':' << genotypeMatrix[1].size() << '\t' << numSNPs[0] << ':' << numSNPs[1] << '\t' <<  relativeBreakpoint << '\t'
-            << numIgnoredSNPs << '\t' << n_alternate_alignments[0] << ':' << n_alternate_alignments[1] << '\t' << SNP_symbols[start_gt] << '\t' << ALIGN_DIRECTIONS[align_dir[0]] << ':' << ALIGN_DIRECTIONS[align_dir[1]] << '\t'
-            << align_chrom_name[0] << ':' << align_chrom_name[1] << '\t' << align_len[0] << ':' << align_len[1] << '\t' << align_loc[0] << ':' << align_loc[1] << endl;
 
+        // "name\tchromosome\tcoordinate1\tcoordinate2\tfirstSNP\tnumUsefulSNPs\tnumIgnoredSNPs\tbreakpoint\talignDir(A:B)\tnumAlternateAlignments(A:B)" << endl;
+
+        stringstream rinfo;
+        rinfo << current_read_name << '\t' << (align_chrom[0] + 1) << '\t' << setw(10) << align_loc[0] << '\t' << setw(10) << align_loc[1] << '\t' << firstSNP << '\t' << numUsefulSNPs << '\t' << numIgnoredSNPs << '\t' << breakpoint << '\t' << ALIGN_DIRECTIONS[align_dir[0]] << ':' << ALIGN_DIRECTIONS[align_dir[1]] << '\t' << n_alternate_alignments[0] << ':' << n_alternate_alignments[1];
         if(align_dir[0] != align_dir[1]) log_file << "[anomolous case] Crossover read " << current_read_name << " has alignments in different directions" << endl;
         categorizeRead(2 + quality, current_read_name, SAM_line[0], SAM_line[1], textoutput, silenced, align_len[1]);
+
+        long long coordinatevalue = genome1size * align_chrom[0] + align_loc[0];
+        recombinantinfo_vector[quality].push_back(make_tuple(coordinatevalue,rinfo.str()));
+
+        if(!silenced) cout << textoutput << endl;
+
     }
+
+    for(int i = 0; i < NUM_RECOMBINANT_CATEGORIES; i++) {
+        sort(recombinantinfo_vector[i].begin(), recombinantinfo_vector[i].end());
+        for(auto it = recombinantinfo_vector[i].begin(); it !=recombinantinfo_vector[i].end(); it++ ) {
+            recombinantinfo_files[i] << get<1>(*it) << endl;
+        }
+        
+    }
+    
+    
 
     error_file << "Total Error Rate: " << 100 * ((double) totalErrors / (double) totalErrorBP) << "%" << endl;
 
-    return;
-}
-
-void parseCIGAR(stringstream& read, vector<int>& mm_locs, int& len, unsigned long& loc, string& chrom_name, bool& dir) {
-    // parse the CIGAR string of the next read in the sam file
-    
-    // Lsat_Sal__Chrom2_(7016910..7020531)	2064	SERH_U_Chr_2	35850229	1	4=1X82=1X79=1X60=1X111=1X20=1X3=1X97=1X194=1X12=1X28=1X12=1X21=1X15=1X3=1I49=1X10=1X1=1X144=1D76=1X9=1X1=1X5=2565H
-    // readname                             flag    chrom_aligned   position    qual    CIGARstring
-    
-    int num, flag;
-    char token;
-
-    read >> flag;
-    read >> chrom_name;
-    read >> loc;
-    read >> num;
-
-    dir = flag & 16; // check if 16 present in flag, indicating aligned reverse direction
-
-    int pos = 0; // current position on reference
-
-    while(read >> num) {
-        read >> token;
-        if(token == '=' || token == 'D') { // = match // D deletion
-            pos += num;
-        } else if(token == 'X') {
-            for(int i = 0; i < num; i++) {
-                mm_locs.push_back(pos);
-                pos++;
-            }
-        } else {
-            // ignore
-        }
-        
-        // X mismatch
-        // H hard clip (ignore, does not consume reference)
-        // S soft clip (ignore, does not consume reference)
-        // D deletion in reference (consume the reference)
-        // I insertion (ignore, does not consume reference)
-    }
-    len = pos;
     return;
 }
 
@@ -403,7 +468,7 @@ void makeDirectories(string base_dir) {
 
     for(int i = 0; i < 2; i++) {
         string SAM_names_prefix = "toGenome";
-        SAM_names_prefix += SNP_symbols[i];
+        SAM_names_prefix += read_SNP_symbols[i];
         output_SAM_files[i] = (ofstream**) malloc(NUM_CATEGORIES * sizeof(ofstream*));
         string gt_dir = alignments_dir + "/" + SAM_names_prefix;
         mkdir((gt_dir).c_str(), 0777);
@@ -431,7 +496,10 @@ void makeDirectories(string base_dir) {
 	mkdir((info_dir).c_str(), 0777);
     for(int i = 0; i < NUM_RECOMBINANT_CATEGORIES; i++) {
         recombinantinfo_files[i].open(info_dir + "/" + CATEGORY_NAMES[i + 2] + "Info.tsv");
-        recombinantinfo_files[i] << "name alignmentSNPs(A:B)  numSNPs(A:B)    relativeBreakpoint  numIgnoredSNPs  numAlternateAlignments(A:B)   firstSNP    alignDir(A:B)   chromosome(A:B)   len(A:B)    alignloc(A:B)" << endl;
+        // recombinantinfo_files[i] << "name alignmentSNPs(A:B)  numSNPs(A:B)    relativeBreakpoint  numIgnoredSNPs  numAlternateAlignments(A:B)   firstSNP    alignDir(A:B)   chromosome(A:B)   len(A:B)    alignloc(A:B)" << endl;
+    
+        recombinantinfo_files[i] << "name\tchromosome\tcoordinate1\tcoordinate2\tfirstSNP\tnumSNPS\tnumIgnoredSNPs\tbreakpoint\talignDir(A:B)\tnumAlternateAlignments(A:B)" << endl;
+
     }
 
     string misc_dir = base_dir + "/misc";
@@ -457,10 +525,10 @@ void createSNPfile(string polymorphism_file) {
     ofstream p_info_file(polymorphism_file + ".happypenguin.info");
     ofstream p_VCF_files[2];
     for(int i = 0; i < 2; i++) {
-        p_VCF_files[i].open(polymorphism_file + ".happypenguin.SNPs" + ".genome" + SNP_symbols[i] + ".VCF");
+        p_VCF_files[i].open(polymorphism_file + ".happypenguin.SNPs" + ".genome" + read_SNP_symbols[i] + ".VCF");
         p_VCF_files[i] << "##fileformat=VCFv4.2\n#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO" << endl;
     }
-    p_SNP_file << "chromosome_num\tgenome_A_location\tgenome_B_location" << endl;
+    p_SNP_file << "chromosome_num\tgenome_1_location\tgenome_2_location\tgenome_1_nucleotide\tgenome_2_nucleotide" << endl;
 
     if(!p_file) { cout << "[ERROR] cannot open " << polymorphism_file << endl; exit(1); }
     string chrBloc_str, unique_id, parent_id, type, prev_parent_id, str;
@@ -486,17 +554,18 @@ void createSNPfile(string polymorphism_file) {
             chrNum[1] = chromosome_numbers[chrName[1]];
             num_SNPs_on_chrom[chrNum[0]] ++;
             if(chrNum[0] != chrNum[1]) {
-                log_file << "[createSNPfile] [warning] Differnent chromosomes in 'syntenic region'" << endl;
+                log_file << "[createSNPfile] [warning] Different chromosomes in 'syntenic region'" << endl;
             }
 
             // write to SNP file
-            p_SNP_file << chrNum[0] + 1 << '\t' << chrLoc[0] << '\t' << chrLoc[1] << endl;
+            p_SNP_file << chrNum[0] + 1 << '\t' << chrLoc[0] << '\t' << chrLoc[1] << '\t' << seq[0] << '\t' << seq[1] << endl;
 
-            // write to both VCF files
-            for(int i = 0; i < 2; i++) {
-                // CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
-                p_VCF_files[i] << (chromosome_names[i][chrNum[i]] + "\t" + to_string(chrLoc[i]) + "\t" + unique_id + "\t" + seq[i] + "\t" + seq[i ^ true] + "\t.\tPASS\t." ) << endl;
-            }
+            // COMMENT BACK!
+            // // write to both VCF files
+            // for(int i = 0; i < 2; i++) {
+            //     // CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+            //     p_VCF_files[i] << (chromosome_names[i][chrNum[i]] + "\t" + to_string(chrLoc[i]) + "\t" + unique_id + "\t" + seq[i] + "\t" + seq[i ^ true] + "\t.\tPASS\t." ) << endl;
+            // }
 
             if(parent_id != prev_parent_id) {
                 num_syntenic_regions_on_chrom[chrNum[0]]++;
@@ -534,12 +603,16 @@ void readSNPs(string polymorphism_file) {
     ifstream p_SNP_file(polymorphism_file + ".happypenguin.SNPs");
     string header;
     getline(p_SNP_file, header);
-    unsigned long chrAloc, chrBloc;
+    int chr1loc, chr2loc;
+    char nuc1, nuc2;
     int chromosome;
     int count = 0;
-    while(p_SNP_file >> chromosome >> chrAloc >> chrBloc) {
-        SNP_coordinates[0][chromosome - 1][chrAloc] = 1;
-        SNP_coordinates[1][chromosome - 1][chrBloc] = 1;
+    // all three arrays are indexed by location on the first genome
+    while(p_SNP_file >> chromosome >> chr1loc >> chr2loc >> nuc1 >> nuc2) {
+        SNP_coordinate[0][chromosome - 1][chr1loc] = chr2loc;
+        SNP_nucleotide[0][chromosome - 1][chr1loc] = nuc1;
+        SNP_nucleotide[1][chromosome - 1][chr1loc] = nuc2;
+        // SNP_coordinates[1][chromosome - 1][chrBloc] = 1;
         count ++;
     }
 }
@@ -595,16 +668,23 @@ void readChromosomes(string alignment_genome_Afile, string alignment_genome_Bfil
     }
     num_chromosomes = genome_sizes[1].size();
 
-    cout << "[happypenguin] Allocating Memory for SNP locations" << endl;
+    genome1size = accumulate(genome_sizes[0].begin(), genome_sizes[0].end(), 0);
 
-    SNP_coordinates    = (bool***) malloc(2 * sizeof(bool**));
-    SNP_coordinates[0] = (bool**)  malloc(num_chromosomes * sizeof(bool*));
-    SNP_coordinates[1] = (bool**)  malloc(num_chromosomes * sizeof(bool*));
+    cout << "[happypenguin] Allocating Memory for SNP locations and SNP nucleotides" << endl;
+
+    SNP_coordinate    = (unsigned int***) malloc(2 * sizeof(unsigned int**));
+    SNP_coordinate[0] = (unsigned int**)  malloc(num_chromosomes * sizeof(unsigned int*));
+    SNP_coordinate[1] = (unsigned int**)  malloc(num_chromosomes * sizeof(unsigned int*));
+
+    SNP_nucleotide    = (char***) malloc(2 * sizeof(char**));
+    SNP_nucleotide[0] = (char**)  malloc(num_chromosomes * sizeof(char*));
+    SNP_nucleotide[1] = (char**)  malloc(num_chromosomes * sizeof(char*));
 
     for(int i = 0; i < num_chromosomes; i++) {
         // memory allocated with calloc will be zero initialized
-        SNP_coordinates[0][i] = (bool*) calloc((genome_sizes[0][i] + 1), sizeof(bool));
-        SNP_coordinates[1][i] = (bool*) calloc((genome_sizes[1][i] + 1), sizeof(bool));
+        SNP_coordinate[0][i] = (unsigned int*) calloc((genome_sizes[0][i] + 1), sizeof(unsigned int));
+        SNP_nucleotide[0][i] = (char*) calloc((genome_sizes[0][i] + 1), sizeof(char));
+        SNP_nucleotide[1][i] = (char*) calloc((genome_sizes[0][i] + 1), sizeof(char));
         log_file << "[calloc] Allocated memory for chromosome " << i + 1 << " SNPs (total " << genome_sizes[0][i] + 1 << " bytes)" << endl;
     }
     return;
@@ -613,12 +693,18 @@ void readChromosomes(string alignment_genome_Afile, string alignment_genome_Bfil
 void memoryCleanup() {
     log_file << "[happypenguin] Deallocating heap memory" << endl;
     for(int i = 0; i < num_chromosomes; i++) {
-        free(SNP_coordinates[0][i]);
-        free(SNP_coordinates[1][i]);
+        free(SNP_coordinate[0][i]);
+        free(SNP_nucleotide[0][i]);
+        free(SNP_nucleotide[1][i]);
+        // free(SNP_coordinate[1][i]);
     }
-    free(SNP_coordinates[0]);
-    free(SNP_coordinates[1]);
-    free(SNP_coordinates);
+    free(SNP_coordinate[0]);
+    free(SNP_coordinate[1]);
+    free(SNP_coordinate);
+
+    free(SNP_nucleotide[0]);
+    free(SNP_nucleotide[1]);
+    free(SNP_nucleotide);
 
     for(int i = 0; i < NUM_CATEGORIES; i++) {
         free(output_SAM_files[0][i]);
