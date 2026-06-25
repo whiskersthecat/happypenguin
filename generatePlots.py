@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 # python3 generatePlots.py happypenguin_output_on_X
 
 import os
@@ -35,7 +36,10 @@ colors = ['black','darkred', 'firebrick','brown','indianred','forestgreen','oliv
 
 labels = list(readLengths.keys())
 for i, label in enumerate(labels):
-    labels[i] = label + " (n = " + str(len(readLengths[label])) + ")"
+    try:
+        labels[i] = label + " (n = " + str(len(readLengths[label])) + ", avg = " + str(round(sum(readLengths[label]) / len(readLengths[label]), 2)) + "bp )"
+    except:
+        labels[i] = label + " (n = " + str(len(readLengths[label])) + ", avg = N/A bp)"
 
 axes.hist(readLengths.values(), bins = 20, label = labels, histtype = 'bar', color = colors)
 axes.legend(prop = {'size' : 10})
@@ -53,7 +57,7 @@ info_dir = base_dir + "/crossover_info"
 # read in all of the information
 hq_info_file = open(info_dir + "/" + "HighQualityCrossoverInfo.tsv", "r")
 hq_info_file.readline()
-hq_breakpoints = [float((line.strip()).split()[3]) for line in hq_info_file.readlines()]
+hq_breakpoints = [float((line.strip()).split()[10]) for line in hq_info_file.readlines()]
 
 n = len(hq_breakpoints)
 

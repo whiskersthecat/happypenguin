@@ -17,6 +17,9 @@
 #include <tuple>
 #include <numeric>
 #include <algorithm>
+#include <unordered_map>
+#include <utility>
+
 using namespace std;
 
 void printProgramInfo();
@@ -26,7 +29,7 @@ void readSNPs(string polymorphism_file);
 void readChromosomes(string alignment_genome_Afile, string alignment_genome_Bfile);
 void analyzeReads();
 void memoryCleanup();
-string reconstructAlignedSequence(stringstream& read, int& len, unsigned long& loc, string& chrom_name, bool& dir);
+string reconstructAlignedSequence(stringstream& read, int& len, unsigned int& loc, string& chrom_name, bool& dir);
 void categorizeRead(int categorization, string& read_name, string& sam_line_1, string& sam_line_2, string& textoutput, bool silenced, int len);
 void createSNPfile(string polymorphism_file);
 void generatePlots(string base_dir);
